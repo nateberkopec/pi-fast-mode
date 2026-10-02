@@ -9,7 +9,9 @@ import piFastMode, {
 	fastModeMultiplier,
 	CODEX_PROVIDER,
 	CONFIG_BASENAME,
+	OPENAI_PROVIDER,
 	DEFAULT_FAST_MODE_MODELS,
+	DEFAULT_OPENAI_FAST_MODE_MODELS,
 	isModelAllowed,
 	OFFICIAL_FAST_MULTIPLIER,
 	parseModelKey,
@@ -28,6 +30,12 @@ const codexModel = (id: string) => ({
 	provider: "openai-codex",
 	id,
 	api: "openai-codex-responses" as const,
+});
+
+const openaiModel = (id: string) => ({
+	provider: "openai",
+	id,
+	api: "openai-responses" as const,
 });
 
 const stateOn = { active: true, serviceTier: "priority" as const };
@@ -83,7 +91,10 @@ describe("config", () => {
 describe("buildModelFilter", () => {
 	test("defaults come from spec defaultModels", () => {
 		const filter = buildModelFilter(SPECS, {});
-		expect(filter.defaults.map((m) => `${m.provider}/${m.id}`)).toEqual([...DEFAULT_FAST_MODE_MODELS]);
+		expect(filter.defaults.map((m) => `${m.provider}/${m.id}`)).toEqual([
+			...DEFAULT_FAST_MODE_MODELS,
+			...DEFAULT_OPENAI_FAST_MODE_MODELS,
+		]);
 		expect(filter.allowlist).toEqual([]);
 		expect(filter.blocklist).toEqual([]);
 	});
@@ -124,6 +135,12 @@ describe("isModelAllowed", () => {
 	});
 	test("non-listed model is rejected", () => {
 		expect(isModelAllowed(codexModel("deepseek-v4-flash"), SPECS, filter)).toBe(false);
+	});
+	test("built-in OpenAI provider model is allowed", () => {
+		expect(isModelAllowed(openaiModel("gpt-6-sol"), SPECS, filter)).toBe(true);
+	});
+	test("OpenAI model id is not allowed under another provider", () => {
+		expect(isModelAllowed({ ...openaiModel("gpt-6-sol"), provider: "azure-openai" }, SPECS, filter)).toBe(false);
 	});
 });
 
@@ -353,7 +370,7 @@ describe("withFastModePricing", () => {
 });
 
 describe("extension registration", () => {
-	test("overlays the existing Codex provider instead of registering a new provider", () => {
+	test("overlays the existing Codex and OpenAI providers instead of registering new providers", () => {
 		const registrations: Array<{ name: string; config: { api?: string } }> = [];
 		const pi = {
 			registerFlag() {},
@@ -369,9 +386,11 @@ describe("extension registration", () => {
 
 		piFastMode(pi as never);
 
-		expect(registrations).toHaveLength(1);
+		expect(registrations).toHaveLength(2);
 		expect(registrations[0]?.name).toBe(CODEX_PROVIDER);
 		expect(registrations[0]?.config.api).toBe("openai-codex-responses");
+		expect(registrations[1]?.name).toBe(OPENAI_PROVIDER);
+		expect(registrations[1]?.config.api).toBe("openai-responses");
 	});
 
 	test("keeps /fast on enabled for a session-only config across /fast status", async () => {
@@ -743,6 +762,82 @@ describe("extension registration", () => {
 			for await (const _event of stream) {}
 
 			expect(body?.model).toBe("gpt-5.6-luna");
+			expect(body?.service_tier).toBe("priority");
+		} finally {
+			server.stop();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("sends priority service_tier through the overlaid OpenAI provider", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-live-"));
+		const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+		mkdirSync(dirname(configPath), { recursive: true });
+		writeConfig(configPath, { active: false, persistState: false, serviceTier: "priority" });
+		let body: Record<string, unknown> | undefined;
+		const server = Bun.serve({
+			port: 0,
+			fetch: () => new Response(JSON.stringify({ error: { message: "captured" } }), {
+				status: 400,
+				headers: { "content-type": "application/json" },
+			}),
+		});
+		try {
+			const registrations: Array<{ name: string; config: { streamSimple: Function } }> = [];
+			const commands: Record<string, { handler: Function }> = {};
+			const events: Record<string, Function> = {};
+			const pi = {
+				appendEntry() {},
+				registerProvider(name: string, config: { streamSimple: Function }) {
+					registrations.push({ name, config });
+				},
+				registerCommand(name: string, command: { handler: Function }) {
+					commands[name] = command;
+				},
+				on(name: string, handler: Function) {
+					events[name] = handler;
+				},
+			};
+			piFastMode(pi as never);
+
+			const model = {
+				id: "gpt-6-sol",
+				provider: "openai",
+				api: "openai-responses" as const,
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				maxTokens: 32_000,
+				contextWindow: 272_000,
+				reasoning: true,
+				input: ["text" as const],
+				cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },
+			};
+			const ctx = {
+				cwd: dir,
+				model,
+				systemPrompt: "test",
+				messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+				tools: [],
+				ui: { setStatus() {}, notify() {} },
+				sessionManager: {
+					getEntries: () => [],
+					getBranch: () => [],
+				},
+			};
+			await events.session_start?.({}, ctx);
+			await commands.fast?.handler("on", ctx);
+
+			const openai = registrations.find((entry) => entry.name === OPENAI_PROVIDER)!;
+			const stream = openai.config.streamSimple(model, ctx, {
+				apiKey: "test-chatgpt-access-token",
+				reasoning: "low",
+				onPayload(payload: Record<string, unknown>) {
+					body = payload;
+					return payload;
+				},
+			});
+			for await (const _event of stream) {}
+
+			expect(body?.model).toBe("gpt-6-sol");
 			expect(body?.service_tier).toBe("priority");
 		} finally {
 			server.stop();

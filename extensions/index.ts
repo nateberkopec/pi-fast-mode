@@ -30,7 +30,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { calculateCost, clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
+import { openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import type {
 	Api,
 	AssistantMessageEvent,
@@ -60,6 +60,8 @@ export type CodexStreamOptions = SimpleStreamOptions & {
 export const CONFIG_BASENAME = "pi-fast-mode.json";
 /** Existing provider whose Codex models should receive the API-layer override. */
 export const CODEX_PROVIDER = "openai-codex";
+/** Existing provider whose Sign in with ChatGPT and API-key models should receive the override. */
+export const OPENAI_PROVIDER = "openai";
 // Footer statuses are rendered alphabetically by key; keep fast mode ahead of MCP.
 export const STATUS_KEY = "fast-mode";
 export const COMMAND_FAST = "fast";
@@ -83,11 +85,21 @@ export const DEFAULT_FAST_MODE_MODELS = [
 	"openai-codex/gpt-5.4",
 ] as const;
 
+/** Built-in supported models for the OpenAI provider. */
+export const DEFAULT_OPENAI_FAST_MODE_MODELS = [
+	"openai/gpt-6.1-sol",
+	"openai/gpt-6-sol",
+	"openai/gpt-6-astra",
+	"openai/gpt-6-luna",
+] as const;
+
 /**
  * How a fast tier is applied for one API. One spec per API; everything else in
  * the extension is driven off these.
  */
 export interface ApiTierSpec {
+	/** Provider whose models on `api` should receive the overlay. */
+	provider: string;
 	api: Api;
 	/** Tiers this API accepts. openai-codex-responses accepts only `priority`. */
 	supportedTiers: readonly ServiceTier[];
@@ -102,6 +114,7 @@ export interface ApiTierSpec {
 }
 
 export const CODEX_RESPONSES_SPEC: ApiTierSpec = {
+	provider: CODEX_PROVIDER,
 	api: "openai-codex-responses",
 	supportedTiers: ["priority"],
 	defaultModels: [...DEFAULT_FAST_MODE_MODELS],
@@ -109,7 +122,17 @@ export const CODEX_RESPONSES_SPEC: ApiTierSpec = {
 		openAICodexResponsesApi().stream(model as Model<"openai-codex-responses">, context, options),
 };
 
-export const SPECS: readonly ApiTierSpec[] = [CODEX_RESPONSES_SPEC];
+export const OPENAI_RESPONSES_SPEC: ApiTierSpec = {
+	provider: OPENAI_PROVIDER,
+	api: "openai-responses",
+	// The Sign in with ChatGPT route rejects `fast` and `flex`; `priority` is what Codex sends.
+	supportedTiers: ["priority"],
+	defaultModels: [...DEFAULT_OPENAI_FAST_MODE_MODELS],
+	streamRaw: (model, context, options) =>
+		openAIResponsesApi().stream(model as Model<"openai-responses">, context, options),
+};
+
+export const SPECS: readonly ApiTierSpec[] = [CODEX_RESPONSES_SPEC, OPENAI_RESPONSES_SPEC];
 
 export interface SupportedModel {
 	provider: string;
@@ -541,7 +564,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 
 	for (const spec of SPECS) {
 		// Overlay the built-in provider to preserve its models and authentication.
-		pi.registerProvider(CODEX_PROVIDER, {
+		pi.registerProvider(spec.provider, {
 			api: spec.api,
 			streamSimple(model, context, options) {
 				const filter = buildModelFilter(SPECS, config);
@@ -554,7 +577,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	}
 
 	pi.registerCommand(COMMAND_FAST, {
-		description: "Toggle OpenAI Codex fast mode; /fast [on|off|status|default]",
+		description: "Toggle OpenAI fast mode; /fast [on|off|status|default]",
 		getArgumentCompletions: (prefix) => {
 			const normalized = prefix.trimStart().toLowerCase();
 			if (normalized.startsWith("default ")) {

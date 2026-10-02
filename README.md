@@ -23,17 +23,18 @@ Restart pi. Requires pi / `@earendil-works/pi-ai` >= 0.84.2.
 /fast default status   show the default and its config path
 ```
 
-When enabled and the active model is supported, a compact footer status shows `⚡ FAST · $ 2.5×`; the active model is already shown elsewhere in the footer. Fast mode itself runs at roughly 1.5x speed. Requests only change for the allowlisted OpenAI Codex models; all other models and providers are untouched.
+When enabled and the active model is supported, a compact footer status shows `⚡ FAST · $ 2.5×`; the active model is already shown elsewhere in the footer. Fast mode itself runs at roughly 1.5x speed. Requests only change for the allowlisted OpenAI Codex and OpenAI models; all other models and providers are untouched.
 
 ## Supported models
 
 - `openai-codex/gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
 - `openai-codex/gpt-5.5`
 - `openai-codex/gpt-5.4`
+- `openai/gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-astra`, `gpt-6-luna` (Sign in with ChatGPT or API key)
 
 Credit multipliers (rate card): 2.5x for GPT-5.6 and GPT-5.5, 2x for GPT-5.4.
 
-Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; the model's API must also be spec'd (currently `openai-codex-responses` only). Edit `allowlist`/`blocklist` in the config to override the built-in defaults — add a custom `models.json` entry on a spec'd API, or block `gpt-5.5` for cost reasons. `service_tier` only exists on OpenAI Responses-style APIs, so other APIs are never touched even if allowlisted.
+Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; the model's API must also be spec'd (currently `openai-codex-responses` and `openai-responses`). Edit `allowlist`/`blocklist` in the config to override the built-in defaults — add a custom `models.json` entry on a spec'd API, or block `gpt-5.5` for cost reasons. `service_tier` only exists on OpenAI Responses-style APIs, so other APIs are never touched even if allowlisted.
 
 ## Configuration
 
@@ -60,14 +61,14 @@ Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Eac
 
 ## How it works
 
-- Overlays the existing `openai-codex` provider with an API-layer stream handler that adds `serviceTier` to request options on allowlisted models, preserving Pi's built-in Codex models and authentication.
+- Overlays the existing `openai-codex` and `openai` providers with API-layer stream handlers that add `serviceTier` to request options on allowlisted models, preserving Pi's built-in models and authentication. The Sign in with ChatGPT route accepts only `priority`; it rejects `fast` and `flex`.
 - Uses session custom entries to restore fast-mode state per session and keeps the global `active` setting as the default for new sessions.
 - pi-ai converts `options.serviceTier` into the `service_tier` request body field and applies its priority cost multiplier, so the request path is unchanged.
 - Fast-mode cost accounting: on terminal stream events the extension re-runs pi-ai's `calculateCost` (token counts × `model.cost`, tier-aware), excludes Codex cache writes, and applies the official rate-card multiplier on top. This is independent of pi-ai's internal multiplier table, so it stays correct if pi-ai changes its internals. Token counts are real and never modified.
 
 ## Security
 
-Pi extensions run with your local user permissions. This extension reads and writes its config JSON files, persists session state through Pi's session API, and delegates LLM calls to pi's built-in OpenAI Codex provider; it makes no independent network requests.
+Pi extensions run with your local user permissions. This extension reads and writes its config JSON files, persists session state through Pi's session API, and delegates LLM calls to pi's built-in OpenAI Codex and OpenAI providers; it makes no independent network requests.
 
 ## License
 
